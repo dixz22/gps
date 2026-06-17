@@ -1052,6 +1052,20 @@ function dismissPrivacy() {
   overlay.classList.add("hidden");
   setTimeout(() => overlay.remove(), 400);
   localStorage.setItem(PRIVACY_KEY, "1");
+
+  // Langsung minta izin/request GPS begitu user menyetujui privasi,
+  // supaya browser memunculkan prompt izin lokasi tanpa harus
+  // menekan tombol utama dulu atau refresh halaman.
+  requestGPSEarly();
+}
+
+function requestGPSEarly() {
+  if (!("geolocation" in navigator)) return;
+  navigator.geolocation.getCurrentPosition(
+    () => { /* hasil tidak dipakai di sini, hanya memicu prompt izin lebih awal */ },
+    () => { /* user menolak / gagal — biarkan, akan dicoba lagi saat tombol utama ditekan */ },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
 }
 
 window.addEventListener("DOMContentLoaded", () => {
