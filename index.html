@@ -467,6 +467,53 @@ header {
   display: block;
 }
 
+/* ── PERMISSION DENIED BANNER ──────────────────────────── */
+#permDeniedBanner {
+  display: none;
+  background: rgba(255,95,95,0.08);
+  border: 1px solid rgba(255,95,95,0.25);
+  border-radius: var(--r-md);
+  padding: 16px 18px;
+  margin: 16px 0 0;
+  text-align: left;
+}
+#permDeniedBanner.visible { display: block; }
+#permDeniedBanner h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--danger);
+  margin-bottom: 6px;
+}
+#permDeniedBanner p {
+  font-size: 12px;
+  color: #c0a8a8;
+  line-height: 1.7;
+  margin: 0;
+}
+#permDeniedBanner code {
+  background: rgba(255,95,95,0.15);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* ── DESKTOP WARNING BADGE ─────────────────────────────── */
+.device-notice {
+  display: none;
+  font-size: 12px;
+  color: var(--warn);
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.2);
+  border-radius: var(--r-sm);
+  padding: 8px 14px;
+  margin-top: 12px;
+  text-align: center;
+  line-height: 1.6;
+}
+.device-notice.visible { display: block; }
+
 /* ── COORDINATE DISPLAY ────────────────────────────────── */
 .coord-block {
   background: var(--surface);
@@ -924,6 +971,20 @@ footer {
     </button>
 
     <p class="status-msg" id="statusMsg" role="status" aria-live="polite"></p>
+
+    <div class="device-notice" id="deviceNotice">
+      💻 Desktop terdeteksi — GPS chip tidak tersedia. Akurasi mungkin ±50–200m (berbasis WiFi/IP). Untuk presisi tinggi, gunakan perangkat mobile.
+    </div>
+
+    <div id="permDeniedBanner">
+      <h4>🚫 Izin Lokasi Ditolak</h4>
+      <p>
+        Browser memblokir akses lokasi. Untuk mengaktifkannya kembali:<br>
+        — Chrome/Edge: klik ikon 🔒 di address bar → <code>Izin situs</code> → aktifkan Lokasi<br>
+        — Firefox: klik ikon 🛡️ → <code>Hapus blokir</code> → muat ulang halaman<br>
+        — Safari: Pengaturan → Safari → Lokasi → Izinkan
+      </p>
+    </div>
   </div>
 
   <!-- Results -->
@@ -1041,39 +1102,82 @@ footer {
 <script src="logic.js"></script>
 <script>
 
-// ── CURRENT RESULT ─────────────────────────────────────
-let currentResult = null;
+// ── STATE ───────────────────────────────────────────────
+let currentResult    = null;
+let _cachedPosition  = null;
+let _permissionState = "unknown"; // "unknown" | "granted" | "denied" | "prompt"
 
-// Cache posisi GPS yang sudah di-warmup, agar tombol langsung jalan
-let _cachedPosition = null;
-let _permissionGranted = false;
+// ── DEVICE DETECTION ────────────────────────────────────
+function isMobile() {
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+}
+
+// ── PERMISSION CHECK + UI UPDATE ────────────────────────
+async function checkPermission() {
+  if (!("permissions" in navigator)) return "unknown";
+  try {
+    const result = await navigator.permissions.query({ name: "geolocation" });
+    _permissionState = result.state;
+    result.onchange = () => {
+      _permissionState = result.state;
+      updatePermissionUI();
+    };
+    return result.state;
+  } catch { return "unknown"; }
+}
+
+function updatePermissionUI() {
+  const banner = document.getElementById("permDeniedBanner");
+  const statusEl = document.getElementById("statusMsg");
+  if (_permissionState === "denied") {
+    banner.classList.add("visible");
+    statusEl.textContent = "";
+  } else {
+    banner.classList.remove("visible");
+  }
+}
 
 // ── GPS PRE-WARM ─────────────────────────────────────────
-// Dipanggil segera setelah user dismiss privacy overlay.
-// Tujuan: trigger izin lokasi sekarang, dan simpan posisi awal ke cache.
-function prewarmGPS() {
+async function prewarmGPS() {
   if (!("geolocation" in navigator)) return;
+
+  // Cek dulu apakah desktop — tampilkan notice
+  if (!isMobile()) {
+    document.getElementById("deviceNotice").classList.add("visible");
+  }
+
+  // Cek permission state sebelum trigger
+  const perm = await checkPermission();
+
+  if (perm === "denied") {
+    // Sudah pasti ditolak — tampilkan banner instruksi, tidak perlu trigger
+    updatePermissionUI();
+    return;
+  }
 
   const statusEl = document.getElementById("statusMsg");
 
+  // Trigger getCurrentPosition — ini yang munculkan popup izin di browser
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       _cachedPosition  = pos;
-      _permissionGranted = true;
-      // Inject ke engine agar detect() bisa pakai langsung
+      _permissionState = "granted";
+      document.getElementById("permDeniedBanner").classList.remove("visible");
       if (typeof KoordinatEngine !== "undefined") {
         KoordinatEngine.setCachedPosition(pos);
       }
       if (statusEl && !statusEl.classList.contains("error")) {
-        statusEl.textContent = `Siap — sinyal GPS tersedia (±${Math.round(pos.coords.accuracy)}m). Tekan tombol untuk mendapatkan koordinat presisi.`;
+        const acc = Math.round(pos.coords.accuracy);
+        const hint = acc > 50 ? " (mode WiFi/IP — presisi terbatas)" : "";
+        statusEl.textContent = `Siap — sinyal tersedia ±${acc}m${hint}. Tekan tombol untuk koordinat presisi.`;
       }
     },
     (err) => {
-      _permissionGranted = false;
-      if (err.code === 1 && statusEl) {
-        statusEl.textContent = "Izin lokasi ditolak. Aktifkan izin di browser lalu muat ulang.";
-        statusEl.classList.add("error");
+      _permissionState = err.code === 1 ? "denied" : "prompt";
+      if (err.code === 1) {
+        updatePermissionUI();
       }
+      // err.code 2/3 = sinyal tidak ada / timeout — tidak perlu banner, biarkan startDetect() handle
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
   );
@@ -1087,7 +1191,6 @@ function dismissPrivacy() {
   overlay.classList.add("hidden");
   setTimeout(() => overlay.remove(), 400);
   localStorage.setItem(PRIVACY_KEY, "1");
-  // Langsung minta izin GPS setelah user setuju privacy notice
   prewarmGPS();
 }
 
@@ -1095,7 +1198,6 @@ window.addEventListener("DOMContentLoaded", () => {
   if (localStorage.getItem(PRIVACY_KEY) === "1") {
     const overlay = document.getElementById("privacyOverlay");
     if (overlay) overlay.remove();
-    // Kunjungan berikutnya: langsung pre-warm tanpa tampilkan overlay
     prewarmGPS();
   }
 });
@@ -1116,93 +1218,121 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// ── SPIN KEYFRAME (inject sekali) ───────────────────────
+(function(){
+  const s = document.createElement("style");
+  s.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
+  document.head.appendChild(s);
+})();
+
+const BTN_IDLE = `
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+    <circle cx="12" cy="12" r="3"/>
+    <line x1="12" y1="2" x2="12" y2="6"/>
+    <line x1="12" y1="18" x2="12" y2="22"/>
+    <line x1="2" y1="12" x2="6" y2="12"/>
+    <line x1="18" y1="12" x2="22" y2="12"/>
+  </svg>
+  Cek Koordinat Saya`;
+
+const BTN_LOADING = `
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:spin 1s linear infinite" aria-hidden="true">
+    <path d="M21 12a9 9 0 1 1-6.22-8.56"/>
+  </svg>
+  Mendeteksi...`;
+
 // ── DETECT LOGIC ────────────────────────────────────────
 async function startDetect() {
   const btn      = document.getElementById("detectBtn");
   const scanEl   = document.getElementById("scanTarget");
   const statusEl = document.getElementById("statusMsg");
+  const banner   = document.getElementById("permDeniedBanner");
 
-  btn.disabled = true;
-  btn.innerHTML = `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:spin 1s linear infinite" aria-hidden="true">
-      <path d="M21 12a9 9 0 1 1-6.22-8.56"/>
-    </svg>
-    Mendeteksi...
-  `;
-
-  // Tambah spin keyframe dinamis
-  if (!document.getElementById("spinStyle")) {
-    const s = document.createElement("style");
-    s.id = "spinStyle";
-    s.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
-    document.head.appendChild(s);
+  // Jika permission sudah denied, tampilkan banner instruksi langsung — tidak perlu lanjut
+  if (_permissionState === "denied") {
+    banner.classList.add("visible");
+    statusEl.textContent = "";
+    statusEl.classList.remove("error");
+    // Scroll ke banner
+    banner.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
   }
 
+  btn.disabled = true;
+  btn.innerHTML = BTN_LOADING;
   statusEl.classList.remove("error");
   scanEl.classList.add("scanning");
   scanEl.classList.remove("done");
-
   document.getElementById("results").classList.remove("visible");
+  banner.classList.remove("visible");
 
-  KoordinatEngine.onStatus(msg => {
-    statusEl.textContent = msg;
-  });
+  KoordinatEngine.onStatus(msg => { statusEl.textContent = msg; });
 
   try {
     const res = await KoordinatEngine.detect();
-    currentResult = res;
+    currentResult     = res;
+    _permissionState  = "granted";
+    banner.classList.remove("visible");
 
-    // Populate koordinat
+    // ── Koordinat
     document.getElementById("latVal").textContent = res.lat.toFixed(7);
     document.getElementById("lonVal").textContent = res.lon.toFixed(7);
     document.getElementById("latDMS").textContent = KoordinatEngine.toDMS(res.lat, true);
     document.getElementById("lonDMS").textContent = KoordinatEngine.toDMS(res.lon, false);
 
-    // Akurasi badge
+    // ── Akurasi badge — desktop aware
     const badge = document.getElementById("accuracyBadge");
     badge.textContent = `±${res.accuracy}m`;
-    if (res.accuracy <= 15)      { badge.className = "accuracy-badge good"; }
-    else if (res.accuracy <= 50) { badge.className = "accuracy-badge fair"; }
-    else                          { badge.className = "accuracy-badge poor"; }
+    if (res.accuracy <= 15)       badge.className = "accuracy-badge good";
+    else if (res.accuracy <= 100) badge.className = "accuracy-badge fair";
+    else                          badge.className = "accuracy-badge poor";
 
-    // Alamat
-    document.getElementById("addrDesa").textContent  = res.desa      !== "-" ? res.desa      : "Tidak terdeteksi";
-    document.getElementById("addrKec").textContent   = res.kecamatan !== "-" ? res.kecamatan : "Tidak terdeteksi";
-    document.getElementById("addrKab").textContent   = res.kabupaten !== "-" ? res.kabupaten : "Tidak terdeteksi";
-    document.getElementById("addrProv").textContent  = res.provinsi  !== "-" ? res.provinsi  : "Tidak terdeteksi";
+    // ── Alamat
+    document.getElementById("addrDesa").textContent      = res.desa      !== "-" ? res.desa      : "Tidak terdeteksi";
+    document.getElementById("addrKec").textContent       = res.kecamatan !== "-" ? res.kecamatan : "Tidak terdeteksi";
+    document.getElementById("addrKab").textContent       = res.kabupaten !== "-" ? res.kabupaten : "Tidak terdeteksi";
+    document.getElementById("addrProv").textContent      = res.provinsi  !== "-" ? res.provinsi  : "Tidak terdeteksi";
     document.getElementById("addrFormatted").textContent = res.formatted;
     document.getElementById("addressLayer").textContent  = res.layer;
 
-    // Google Maps link
-    const mapsURL = KoordinatEngine.toMapsURL(res.lat, res.lon);
-    document.getElementById("mapsLink").href = mapsURL;
-    document.getElementById("mapsLink").onclick = () => { window.open(mapsURL, "_blank"); return false; };
+    // ── Info akurasi desktop
+    if (!isMobile() && res.accuracy > 50) {
+      document.getElementById("addrFormatted").textContent =
+        res.formatted + " (akurasi terbatas — desktop tidak punya GPS chip)";
+    }
 
-    // Done state
+    // ── Google Maps
+    const mapsURL = KoordinatEngine.toMapsURL(res.lat, res.lon);
+    const mapsEl  = document.getElementById("mapsLink");
+    mapsEl.href = mapsURL;
+    mapsEl.onclick = () => { window.open(mapsURL, "_blank"); return false; };
+
+    // ── Done state
     scanEl.classList.remove("scanning");
     scanEl.classList.add("done");
     statusEl.textContent = "✓ Koordinat berhasil dideteksi";
+    statusEl.classList.remove("error");
 
-    // Show results
     document.getElementById("results").classList.add("visible");
-
-    // Scroll ke results
     setTimeout(() => {
       document.getElementById("results").scrollIntoView({ behavior: "smooth", block: "start" });
     }, 200);
 
   } catch (err) {
-    statusEl.textContent = err.message;
-    statusEl.classList.add("error");
+    // Jika error karena denied, tampilkan banner
+    if (err.message.includes("ditolak") || err.message.includes("denied") || _permissionState === "denied") {
+      _permissionState = "denied";
+      banner.classList.add("visible");
+      statusEl.textContent = "";
+    } else {
+      statusEl.textContent = err.message;
+      statusEl.classList.add("error");
+    }
     scanEl.classList.remove("scanning");
+
   } finally {
     btn.disabled = false;
-    btn.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
-        <circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
-      </svg>
-      Cek Koordinat Saya
-    `;
+    btn.innerHTML = BTN_IDLE;
   }
 }
 

@@ -261,13 +261,19 @@ const KoordinatEngine = (() => {
       }
 
       // Refine via watchPosition untuk akurasi lebih baik
+      // Desktop tidak punya GPS chip — gunakan threshold akurasi lebih longgar
+      const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      const accuracyTarget  = isMobileDevice ? 20 : 200; // mobile: 20m, desktop: terima sampai 200m
+      const watchTimeout    = isMobileDevice ? 10000 : 6000; // desktop lebih cepat timeout
+
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           if (!bestPos || pos.coords.accuracy < bestPos.coords.accuracy) {
             bestPos = pos;
             emitStatus(`Sinyal ditemukan, akurasi ±${Math.round(pos.coords.accuracy)}m...`);
           }
-          if (bestPos.coords.accuracy <= 15) finish(bestPos);
+          // Selesai jika akurasi sudah cukup baik sesuai device type
+          if (bestPos.coords.accuracy <= accuracyTarget) finish(bestPos);
         },
         (err) => {
           let msg = "Tidak dapat mengakses lokasi.";
@@ -278,20 +284,24 @@ const KoordinatEngine = (() => {
           if (bestPos && !settled) finish(bestPos);
           else if (!settled) reject(new Error(msg));
         },
-        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: watchTimeout, maximumAge: 5000 }
       );
 
-      // Timeout 8 detik — pakai pos terbaik yang ada (bisa dari cache)
+      // Timeout adaptif — pakai pos terbaik yang ada (bisa dari cache)
+      const hardTimeout = isMobileDevice ? 8000 : 5000;
       timeoutId = setTimeout(() => {
         if (bestPos && !settled) {
-          emitStatus("Menggunakan sinyal GPS terbaik yang tersedia...");
+          emitStatus("Menggunakan sinyal terbaik yang tersedia...");
           finish(bestPos);
         } else if (!settled) {
           settled = true;
           if (watchId) navigator.geolocation.clearWatch(watchId);
-          reject(new Error("GPS timeout. Pastikan izin lokasi diberikan dan coba di tempat terbuka."));
+          const msg = isMobileDevice
+            ? "GPS timeout. Pastikan izin lokasi diberikan dan coba di tempat terbuka."
+            : "Tidak dapat memperoleh lokasi. Pastikan izin lokasi diaktifkan di browser.";
+          reject(new Error(msg));
         }
-      }, 8000);
+      }, hardTimeout);
     });
   }
 
