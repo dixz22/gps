@@ -1044,6 +1044,41 @@ footer {
 // ── CURRENT RESULT ─────────────────────────────────────
 let currentResult = null;
 
+// Cache posisi GPS yang sudah di-warmup, agar tombol langsung jalan
+let _cachedPosition = null;
+let _permissionGranted = false;
+
+// ── GPS PRE-WARM ─────────────────────────────────────────
+// Dipanggil segera setelah user dismiss privacy overlay.
+// Tujuan: trigger izin lokasi sekarang, dan simpan posisi awal ke cache.
+function prewarmGPS() {
+  if (!("geolocation" in navigator)) return;
+
+  const statusEl = document.getElementById("statusMsg");
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      _cachedPosition  = pos;
+      _permissionGranted = true;
+      // Inject ke engine agar detect() bisa pakai langsung
+      if (typeof KoordinatEngine !== "undefined") {
+        KoordinatEngine.setCachedPosition(pos);
+      }
+      if (statusEl && !statusEl.classList.contains("error")) {
+        statusEl.textContent = `Siap — sinyal GPS tersedia (±${Math.round(pos.coords.accuracy)}m). Tekan tombol untuk mendapatkan koordinat presisi.`;
+      }
+    },
+    (err) => {
+      _permissionGranted = false;
+      if (err.code === 1 && statusEl) {
+        statusEl.textContent = "Izin lokasi ditolak. Aktifkan izin di browser lalu muat ulang.";
+        statusEl.classList.add("error");
+      }
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
 // ── PRIVACY LOGIC ───────────────────────────────────────
 const PRIVACY_KEY = "koordinat_privacy_v1";
 
@@ -1052,26 +1087,16 @@ function dismissPrivacy() {
   overlay.classList.add("hidden");
   setTimeout(() => overlay.remove(), 400);
   localStorage.setItem(PRIVACY_KEY, "1");
-
-  // Langsung minta izin/request GPS begitu user menyetujui privasi,
-  // supaya browser memunculkan prompt izin lokasi tanpa harus
-  // menekan tombol utama dulu atau refresh halaman.
-  requestGPSEarly();
-}
-
-function requestGPSEarly() {
-  if (!("geolocation" in navigator)) return;
-  navigator.geolocation.getCurrentPosition(
-    () => { /* hasil tidak dipakai di sini, hanya memicu prompt izin lebih awal */ },
-    () => { /* user menolak / gagal — biarkan, akan dicoba lagi saat tombol utama ditekan */ },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-  );
+  // Langsung minta izin GPS setelah user setuju privacy notice
+  prewarmGPS();
 }
 
 window.addEventListener("DOMContentLoaded", () => {
   if (localStorage.getItem(PRIVACY_KEY) === "1") {
     const overlay = document.getElementById("privacyOverlay");
     if (overlay) overlay.remove();
+    // Kunjungan berikutnya: langsung pre-warm tanpa tampilkan overlay
+    prewarmGPS();
   }
 });
 

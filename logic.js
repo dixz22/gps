@@ -11,6 +11,9 @@ const KoordinatEngine = (() => {
   let _onStatus = null;
   let _onError  = null;
 
+  // Cache posisi dari prewarm (diisi oleh HTML setelah dismiss privacy overlay)
+  let _cachedPos = null;
+
   // ─── UTILITY ───────────────────────────────────────────────
 
   function cleanAdminName(str) {
@@ -217,10 +220,18 @@ const KoordinatEngine = (() => {
         return;
       }
 
-      let bestPos    = null;
+      // Pakai cached position dari prewarm sebagai initial bestPos
+      // sehingga tidak perlu tunggu izin ulang dan langsung ada sinyal awal
+      let bestPos    = _cachedPos || null;
       let watchId    = null;
       let timeoutId  = null;
       let settled    = false;
+
+      if (bestPos) {
+        emitStatus(`Menggunakan sinyal cached, akurasi ±${Math.round(bestPos.coords.accuracy)}m...`);
+      } else {
+        emitStatus("Menunggu sinyal GPS...");
+      }
 
       function finish(pos) {
         if (settled) return;
@@ -233,6 +244,9 @@ const KoordinatEngine = (() => {
           return;
         }
 
+        // Update cache dengan posisi terbaru yang lebih presisi
+        _cachedPos = pos;
+
         resolve({
           lat:      pos.coords.latitude,
           lon:      pos.coords.longitude,
@@ -240,8 +254,13 @@ const KoordinatEngine = (() => {
         });
       }
 
-      emitStatus("Menunggu sinyal GPS...");
+      // Jika cache sudah sangat akurat (≤15m), langsung resolve
+      if (bestPos && bestPos.coords.accuracy <= 15) {
+        finish(bestPos);
+        return;
+      }
 
+      // Refine via watchPosition untuk akurasi lebih baik
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           if (!bestPos || pos.coords.accuracy < bestPos.coords.accuracy) {
@@ -255,13 +274,14 @@ const KoordinatEngine = (() => {
           if (err.code === 1) msg = "Izin lokasi ditolak. Aktifkan izin di browser Anda.";
           if (err.code === 2) msg = "Sinyal GPS tidak tersedia saat ini.";
           if (err.code === 3) msg = "Waktu permintaan GPS habis.";
-          if (!bestPos && !settled) reject(new Error(msg));
-          else if (bestPos && !settled) finish(bestPos);
+          // Jika ada cached pos, pakai itu sebagai fallback daripada error
+          if (bestPos && !settled) finish(bestPos);
+          else if (!settled) reject(new Error(msg));
         },
         { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
 
-      // Timeout 8 detik — pakai pos terbaik
+      // Timeout 8 detik — pakai pos terbaik yang ada (bisa dari cache)
       timeoutId = setTimeout(() => {
         if (bestPos && !settled) {
           emitStatus("Menggunakan sinyal GPS terbaik yang tersedia...");
@@ -284,6 +304,15 @@ const KoordinatEngine = (() => {
      * @param {Function} fn - fn(message: string)
      */
     onStatus(fn) { _onStatus = fn; return this; },
+
+    /**
+     * Inject cached position dari prewarm GPS.
+     * Dipanggil oleh HTML segera setelah getCurrentPosition() berhasil.
+     * @param {GeolocationPosition} pos
+     */
+    setCachedPosition(pos) {
+      _cachedPos = pos;
+    },
 
     /**
      * Jalankan deteksi koordinat + reverse geocoding.
